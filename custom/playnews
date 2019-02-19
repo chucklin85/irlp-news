@@ -1,0 +1,523 @@
+#!/bin/bash
+#######################################################################
+# filename:	playnews
+# description:	Play any one of a number different audio news files
+# arguments:	wia	play WIA News - NO CALLBACKS
+#		arnl	play Amateur Radio Newsline
+#		rain	play RAIN Report
+#		rsgb    play RSGB Newsline
+#               q       play VK4 QNews programme
+#               vk5     play VK5 Local news programme
+#               vk7     play VK7 Regional news programme
+#               raotc   play RAOTC Monthly news programme
+#               pod     play anything on demand from the news archive
+#               wiamcb  play WIA with a halt for manual callbacks
+#                       (**NOT FOR USE BY CRON - Terminal only!**)
+#               wiaacb  play WIA with auto callback active
+#               test || testacb  Test system and test auto callback system
+#
+#               add 'nocool' to skip cooldown cycle at end
+#                 ('test' command automatically adds 'nocool' parameter)
+#
+# input:	/home/irlp/audio/custom/news/wianews.mp3
+#		/home/irlp/audio/custom/news/rain.mp3
+#		/home/irlp/audio/custom/news/rsgban.mp3
+#               /home/irlp/audio/custom/news/qnews.mp3
+#               /home/irlp/audio/custom/news/vk5.mp3
+#               /home/irlp/audio/custom/news/vk7.mp3
+#               /home/irlp/audio/custom/news/arnl.mp3
+#               /home/irlp/audio/custom/news/raotc.mp3
+#               /home/irlp/audio/custom/news/arrlan.mp3
+#         (pod) /news_archive/ any file specified in $2 - 
+#                  ** Note - specify file extn if NOT .MP3
+#
+# dependants    sendmail
+#               or postfix - Must have a working MTA for callbacks
+#               mutt       - to send emails out (incomming not needed)
+#               mpg123     - Needed to process .mp3 files
+#               bladeenc   - mp3 encoder for coding callbacks
+#                            and concatenating the audio files
+#               Festival 
+#                       OR - for auto callback speech synth
+#               Cepstral
+#
+# additional scripts:-
+#               fan_ctrl 
+#                       OR - fan controllers (if req)
+#               fan_ctrl2
+#               getnews  - retrieves news files
+#               coscounter - counts # callbacks
+#               stopnews  - forcefully exit system
+#               ptt_reset - if required for repeater
+#
+# output:	none, only audio! (we hope)
+#               Email messages    (maybe..)
+#
+# history:
+# 20020108   kc6hur  original release
+# 20020125   kc6hur  Added check for "active" and set "active" flag.
+#	             Added "tick-key" process to keep PTT alive.
+# 20020201   kc6hur  Added "notimeout" (rm ${LOCAL}/timeout)
+# 20020320   kc6hur  Added "my_key", "my_unkey" functions and hooks 
+#	             to new PTT state manager.
+# 20020409   kc6hur  Added forcekey and forceunkey. Removed tick-key
+# 20020609   kc6hur  Added calls to custom_on and custom_off
+# 20030504   kc6hur  AAN now plays in segments thus allowing a break
+#	             between segments.
+# 20080720   vk8sj   Total rehash of code - altered file selection 
+#                    code and modified to use mpg321 to play files in
+#                    .mp3 format.  Now controls a radio cooling fan.
+#                    **NOTE** cooling fan only works with V3 IRLP boards
+#                    my_key/unkey functions shifted to my-functions.sh
+# 20090416   vk8sj   Added QNews and VK5 Local news to the programme list
+# 20091016   vk8sj   Added callback routines for WIA news
+# 20110225   vk8sj   Added sleep in autocallback for radio pulseback
+# 20160815   vk2yld  added test routines, removed twiar and twiari playback
+#                    added 'nocool' parameter to command-line and removed
+#                    need for my_functions.sh brought functions local.
+# 20180220   vk2yld  WIA callback email address change.
+# 20181120   vk2yld  Added support for RAOTC monthly news & few tweaks
+#                    around the callbacks, general tidy up
+# 20190219   vk3mjm  Support arecord to capture callbacks as record didn't
+#		     like the parameters provided on IRLPi. Added google TTS
+#
+#############################################################################
+###                           Configuration                               ###
+#############################################################################
+
+NEWS="$AUDIO/custom/news"         # Where are the news files stored?
+CALLBACKLOOPS=2                   # Sets number off callback rounds
+IRLPV3="NO"                      # Do you have an IRLP Ver3 Board and fan?
+FANAUX=3                          # If so, which aux line is the fan on?
+COOLTIME=0                      # How long to cool after transmission (sec)
+RESET_REQ="NO"                    # Is reset of PTT required? (into repeater)
+
+AUTOMAIL="me@myrepeater.net"     # Email address for auto callbacks
+WIA_MAIL="NO"                     # Email autocallbacks to WIA as well?
+#WIA_ADDR="callbacks@wia.org.au"   # Email address for WIA here
+TTSengine="google"                 # Set as required.. Swift or
+# TTSengine="festival"            #                   Festival
+
+#############################################################################
+###                        Function definitions                           ###
+#############################################################################
+#
+# This function logs Date etc then message..
+#
+writelog() {
+  MESSAGE="`date '+%b %d %Y %T %z'` "$@
+  if [ -n "$LOGFILE" ]; then
+    echo $MESSAGE >> $LOGFILE
+  fi
+}
+#
+### Key...
+# Key the PTT. If the PTT manager program is running then use it
+# otherwise, just mash it
+#
+my_key() {
+   if ps -C ptt -o pid= >&/dev/null
+   then
+      echo "+" > $LOCAL/ptt_fifo
+   else
+      $BIN/coscheck
+      $BIN/coscheck
+      $BIN/coscheck
+      $BIN/coscheck
+      $BIN/coscheck
+      $BIN/coscheck
+      $BIN/coscheck
+      $BIN/coscheck
+      $BIN/coscheck
+      $BIN/coscheck
+      $BIN/forcekey
+   fi
+}
+### Unkey
+# Unkey the PTT. If the PTT manager program is running, then use it
+# otherwise, just bury it
+#
+my_unkey() {
+   if ps -C ptt -o pid= >&/dev/null
+   then
+      echo "-" > $LOCAL/ptt_fifo
+   else
+      $BIN/forceunkey
+   fi
+}
+
+### Restart CWID
+# Restarts the CWID sequence when it has been stopped
+#
+#
+restartcwid() {
+   rm -f /home/irlp/local/cwtimer    # remove lockout flag file
+   /home/irlp/custom/cwtimer_mon     # force restart the loop
+}
+#
+### PlayMP3
+# Key the PTT, play MP3 file passed in command line, then unkey
+#  Filename should be specified without the extension.  If second
+#  parameter is 'txon' the routine will not shut down tx on completion
+#
+playmp3() {
+  my_key
+  usleep 500000
+  echo "Playing $1.mp3"
+  /usr/bin/mpg123 $1.mp3 > /dev/null 2>&1
+  usleep 200000
+  if [ "$2" != "txon" ] ; then
+    my_unkey
+  fi
+}
+
+### PlayWAV
+# Key the PTT, play WAV file passed in command line, then unkey
+#  Filename should be specified with the extension
+#
+playwav() {
+  my_key
+  usleep 500000
+  echo "Playing $1"
+  $BIN/play $1 > /dev/null 2>&1
+  usleep 200000
+  if [ "$2" != "txon" ] ; then
+    my_unkey
+  fi
+}
+#
+usage() {
+   echo "usage : playnews [wia|wiamcb|wiaacb|arnl|arrlan|rain|q|vk5|vk7|raotc|rsgb|test|testacb [nocooldown]"
+   echo
+}
+#
+#############################################################################
+###                                                                       ###
+###                 MAIN PROGRAM EXECUTION STARTS HERE                    ###
+###                                                                       ###
+#############################################################################
+#
+CALLBACK="NO"                           # Don't touch this please... (Default)
+#
+##############################################################################
+#
+# Make sure we are user repeater!!!
+   if [ "`/usr/bin/whoami`" != "repeater" ] ; then
+     writelog "Playnews: ERROR - Incorrect user"
+     echo "This program must be run as user REPEATER!"
+     exit 1
+   fi
+# Make sure we have sourced the environment file
+   if [ "$RUN_ENV" != "TRUE" ] ; then
+      . /home/irlp/custom/environment
+   fi
+#
+if [ ! -f $LOCAL/enable ] ; then
+   echo "Node disabled..  Aborting.."
+   writelog "Playnews: ERROR - Node is Disabled"
+   exit 1
+fi
+
+if [ "$#" = "0" ] ; then                     # If no arguments
+   usage                                     # Display usage message
+   writelog "Playnews: ERROR - No parameters."
+   exit 99
+fi
+
+##############################################################################
+
+starttime=`date`
+
+if [ "$IRLPV3" == "YES" ] ; then
+   FANON="aux"$FANAUX"on"                    # Setup fan controls
+   FANOFF="aux"$FANAUX"off"
+fi
+
+# Check for command line switches..
+COOLDOWN=`echo "$@" | awk '{ if ( $0 ~/nocool/ ) print "NO" }'`
+MP3=`echo "$@" | awk '{ if ( $0 ~/mp3/ ) print "YES" }'`
+ERRORFILE="null"
+#
+
+if [ "$RESET_REQ" == "YES" ] ; then
+   /home/irlp/custom/ptt_reset &                # set ptt reset timer going
+   writelog "playnews: PTT Reset timer activated."        # in background
+fi
+case $1 in                                      # Specify file to play - no extn = .mp3
+   wia)		ERRORFILE=$NEWS/error-wia
+		writelog "Playnews: WIA news selected, no callbacks"
+		AUDIOFILE=$NEWS/wianews ;;      # WIA News Report
+   wiamcb)	ERRORFILE=$NEWS/error-wia
+		writelog "Playnews: WIA news selected, Manual Callbacks"
+		AUDIOFILE=$NEWS/wianews
+		CALLBACK="Manual" ;;            # Select WIA with man callback
+   wiaacb)	ERRORFILE=$NEWS/error-wia
+		writelog "Playnews: WIA news selected, Automatic Callbacks"
+		AUDIOFILE=$NEWS/wianews
+		CALLBACK="Auto" ;;              # Select WIA with auto callbacks
+   arnl)	ERRORFILE=$NEWS/error-arnl
+		writelog "Playnews: AR Newsline selected"
+		AUDIOFILE=$NEWS/arnl ;;         # Select AR Newsline Report
+   arrlan)	ERRORFILE=$NEWS/error-arrlan
+		writelog "Playnews: ARRL Audio News selected"
+		AUDIOFILE=$NEWS/arrlan ;;       # Select ARRL Audio News
+   rain)	ERRORFILE=$NEWS/error-rain
+		writelog "Playnews: RAIN Report selected"
+		AUDIOFILE=$NEWS/rain ;;         # Rain Report Selected
+   q)		ERRORFILE=$NEWS/error-q
+		writelog "Playnews: Q-News selected"
+		AUDIOFILE=$NEWS/qnews ;;        # Select QNews
+   rsgb)	ERRORFILE=$NEWS/error-rsgb
+		writelog "Playnews: RSGB news selected"
+		AUDIOFILE=$NEWS/rsgban ;;       # Select RSGB News
+   raotc)	ERRORFILE=$NEWS/error-raotc
+		writelog "Playnews: RAOTC news selected"
+		AUDIOFILE=$NEWS/raotc ;;        # Select RAOTC monthly News
+   vk5)		ERRORFILE=$NEWS/error-vk5
+		writelog "Playnews: VK5 Local news selected"
+		AUDIOFILE=$NEWS/vk5 ;;          # Select VK5 Local News
+   vk7)		ERRORFILE=$NEWS/error-vk7
+		writelog "Playnews: VK7 Local news selected"
+		AUDIOFILE=$NEWS/vk7 ;;          # Select VK7 Regional News
+   test)	AUDIOFILE=$NEWS/playnews_test.wav
+		writelog "Playnews: System Test Active"
+                COOLDOWN="NO" ;;
+   testacb)	AUDIOFILE=$NEWS/playnews_test.wav
+		writelog "Playnews: System Auto-Callback Test Active"
+		CALLBACK="Auto"                 # Test setup without mailing
+                COOLDOWN="NO"
+		WIA_MAIL="NO" ; WIA_ADDR="" ;;  # dont send junk to the WIA!
+   *)		usage ; exit 1 ;;               # Error.. screwed something up..
+esac
+
+if [ -f $LOCAL/timeout ] ; then
+   TIMEOUT="YES"				# Set timeout restore flag
+   TOVALUE="`cat $LOCAL/timeout`"            	# Save TIMEOUT VALUE
+   rm -f $LOCAL/timeout &>/dev/null          	# Disable activity timer
+ else
+   TIMEOUT="NO"	                             	# Set timeout OFF flag
+fi
+rm -f $LOCAL/stopnews &>/dev/null            	# Remove queued cancel flag
+#
+##################################
+# Rip node out of IRLP Mode      #
+##################################
+#
+if [ -f $LOCAL/active ] ; then               	# If node is connected
+   writelog "Playnews: Killing current connection before broadcast."
+   $SCRIPT/end                               	# Kill connection
+   sleep 3                                   	# Beauty sleep.. need some...
+fi
+$SCRIPT/disable                              	# Disable node
+/usr/bin/killall -9 dtmf > /dev/null 2>&1
+/bin/touch $LOCAL/active
+#
+#
+if [ "$IRLPV3" == "YES" ] ; then
+   touch $LOCAL/fan_lock                     	# lock fan ON - FANCTRL script
+                                             	# will see flag and start fan
+fi
+touch /home/irlp/local/cwtimer               	# Stop CWID tx
+#
+##################################
+# Play the requested audio file  #
+##################################
+#                                            	# WIA scripts start 1min early so.
+if [ "${1:0:3}" == "wia" ] ; then            	# If any wia program, then
+   playmp3 $NEWS/vk1_warmup                   	# play warmup first.. and
+   sleep 27                                  	# bolster out to 1 min, then..
+fi
+#
+if [ -f $ERRORFILE ]; then			# File download error had happened
+  AUDIOFILE=$NEWS/download-error.wav		# Change audio file to apology and
+  CALLBACK="NO"					# make sure no callbacks happen
+fi
+
+is_wav=`echo $AUDIOFILE | awk ' { IGNORECASE=1 ; if($0 ~/wav$/)print "YES" } '`
+if [ "$is_wav" == "YES" ] ; then
+   playwav $AUDIOFILE txon                      # play WAV file, then leave tx on
+ else
+   playmp3 $AUDIOFILE txon                      # play MP3 file, then leave tx on
+fi
+#
+#
+if [ ! -f $LOCAL/stopnews ] ; then
+   writelog "Playnews: Broadcast ended normally."
+ else
+   writelog "Playnews: Broadcast ended by force."
+   CALLBACK="NO"                                # Force end kills callbacks too.
+   my_unkey                                     # drop transmitter
+   rm -f $LOCAL/stopnews                        # Delete stopnews flag
+fi
+
+if [ "$TIMEOUT" == "YES" ] ; then
+   touch $LOCAL/timeout
+   if [ "$TOVALUE" != "" ] ; then
+      echo $TOVALUE > $LOCAL/timeout
+   fi
+fi
+sleep 2                                         # Another nap?
+#
+##################################
+# Manual Callbacks               #
+##################################
+#
+if [ "$CALLBACK" == "Manual" ] ; then
+   writelog "Playnews: Manual callback sequence started."
+   my_unkey
+   echo "Manual Callback Mode..."
+   echo "Email results to - "$WIA_ADDR" after session"
+   echo -n " Script pausing for callbacks. Hit ENTER to continue." ; read
+   writelog "Playnews: Manual callback sequence completed."
+fi
+#
+##################################
+# Automatic Callbacks            #
+##################################
+#
+if [ "$CALLBACK" == "Auto" ] ; then
+   writelog "Playnews: Automatic callback sequence started, "$CALLBACKLOOPS" loops."
+   echo "Auto callback sequence started.. "$CALLBACKLOOPS" loops required."
+   no_calls=0
+   segment=1
+   while [ "$segment" -le "$CALLBACKLOOPS" ] ; do
+      if [ "$segment" == "1" ] ; then
+         play $NEWS/autocallback.wav
+       else
+         play $NEWS/nextloop.wav
+      fi
+      recfile="callback"$segment".wav"
+      play $NEWS/tone.wav
+      my_unkey
+      usleep 250                                # Pulseback- must sleep
+      $CUSTOM/coscounter &                      # start COS activity scanner
+      $BIN/record -r 44100 $NEWS/$recfile &      # Record to disk in background
+      PID=$!                                    # Get process ID for kill
+      sleep 20                                  # Record for 20 secs
+      kill -INT $PID                            # Kill recording process
+      my_key                                    # fire up transmitter again
+      usleep 250000                             # time for tx to steady..
+      play $NEWS/tone2.wav                      # signal end of recording
+      killall coscounter                        # kill COS scanner
+      sleep 2                                   # shhhhh....zzzzzz
+      if [ `cat $LOCAL/coscount` = "0" ] ; then # No COS transitions
+         play $NEWS/nothingheard.wav            # Advise nothing detected
+      else
+         play $NEWS/heard.wav
+         let no_calls="`cat $LOCAL/coscount`"+$no_calls
+         sleep 2
+         play $NEWS/$recfile                    # replay recording
+      fi
+      echo "Loop "$segment" done...  `cat $LOCAL/coscount` callbacks received.."
+      let segment=$segment+1
+   done                                         # next loop please..
+   echo $no_calls" total callbacks received.."
+   if [ $no_calls -ne "0" ] ; then              # WE GOT ONE!! (or more..)
+      play $NEWS/close.wav                      # thank the nice people...
+      sleep 2                                   # zzzzzzz
+      my_unkey
+#
+# Mash files and send away callback data...
+#
+      mailfile=$NEWS"/IRLP"${STATIONID:3:4}"_Callbacks.mp3"
+      bladeenc -concat $NEWS/callback?.wav      # use blade encoder to
+      mv $NEWS/callback1.mp3 $mailfile          # concat all .wav files
+      cat > $NEWS/mailbody << EOF               # into callback1.mp3
+
+
+The attached file is the  automatic callbacks  from a WIA news broadcast that was
+either  scheduled or  was the  result  of  a "Play  on  Demand" function request.
+The IRLP node mentioned in the subject line of this message played the broadcast.
+
+EOF
+      echo "          Transmission started "$starttime"." >> $NEWS/mailbody
+      echo "      There were "$no_calls" callback(s) from this broadcast." >> $NEWS/mailbody
+      cat >> $NEWS/mailbody << EOF
+
+
+Yes, this is another one of those automatically generated EMail messages 
+and please, DO NOY REPLY TO THIS MESSAGE.  Your message will never be 
+received.  If you wish to contact the node owner, either look at the 
+'CC' field of the message header, or go to the IRLP status page and look up 
+the node number from the message header and click on 'ask a question'
+
+      Thank you....
+
+EOF
+
+      if [ "$WIA_MAIL" == "YES" ] ; then
+         echo "     $CALLSIGN" | mutt -s "WIA Callbacks from IRLP node ${STATIONID:3:4}" \
+               -i $NEWS/mailbody -a $mailfile -c $AUTOMAIL $WIA_ADDR
+       else
+         echo "     $CALLSIGN" | mutt -s "WIA Callbacks from IRLP node ${STATIONID:3:4}" \
+               -i $NEWS/mailbody -a $mailfile $AUTOMAIL
+      fi
+   else
+      my_unkey       # No callbacks, unkey then take bat & ball, go home!
+      cat > $NEWS/mailbody << EOF
+
+
+This email is from the automatic callbacks  from a WIA news broadcast that was
+either  scheduled or  was the  result  of  a "Play  on  Demand" function request.
+The IRLP node mentioned in the subject line of this message played the broadcast.
+
+EOF
+      echo "          Transmission started "$starttime"." >> $NEWS/mailbody
+
+      cat >> $NEWS/mailbody << EOF
+      There were NO callback(s) from this broadcast. (sniff sob..)
+
+
+Yes, this is another one of those automatically generated EMail messages
+and please, DO NOY REPLY TO THIS MESSAGE.  Your message will never be
+received.  If you wish to contact the node owner, either look at the
+'CC' field of the message header, or go to the IRLP status page and look up
+the node number from the message header and click on 'ask a question'
+
+      Thank you....
+
+EOF
+      if [ "$WIA_MAIL" == "YES" ] ; then
+         echo "     $CALLSIGN" | mutt -s "WIA Callbacks from IRLP node ${STATIONID:3:4}" \
+               -i $NEWS/mailbody -c $AUTOMAIL $WIA_ADDR
+       else
+         echo "     $CALLSIGN" | mutt -s "WIA Callbacks from IRLP node ${STATIONID:3:4}" \
+               -i $NEWS/mailbody $AUTOMAIL
+      fi
+   fi
+   rm -f $NEWS/callback*.wav $NEWS/mailbody $mailfile $LOCAL/coscount
+   writelog "Playnews: Auto callback sequence completed, "$no_calls" calls received.."
+fi
+#
+##################################
+# Cleanup and exit time..        #
+##################################
+#
+if [ "RESET_REQ" == "YES" ] ; then
+   killall ptt_reset                            # stop ptt reset timer
+   writelog "PTT Reset timer stopped."
+fi
+my_unkey
+rm -rf $LOCAL/active
+$SCRIPT/enable                                  # re-enable node
+$BIN/dtmf > /dev/null 2>&1
+#restartcwid					# Re-start CWID sequence.....
+#
+if [ "$COOLDOWN" == "NO" ]; then
+   echo "Cooldown cycle skipped by command..."
+   rm -f $LOCAL/fan_lock			# allow auto fan ctrl again
+   writelog "Playnews: Radio cooling cycle skipped."
+else
+   if [ "$IRLPV3" == "YES" ] ; then
+      echo -n $COOLTIME" second radio cooldown cycle in progress..."
+      writelog "Playnews: Cooling cycle, "$COOLTIME"sec Timer Start..."
+      sleep $COOLTIME				# Let radio chill out a while
+      rm -f $LOCAL/fan_lock			# allow auto fan ctrl again
+      echo "Completed."
+      writelog "Playnews: Radio cooling cycle complete."
+   fi
+fi
+exit 0
+
+#  All done.....
+

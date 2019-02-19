@@ -1,0 +1,680 @@
+#!/bin/bash
+########################################################################
+# filename:	getnews
+#
+# description:	This script will get the latest copy of the WIA Audio
+#		news, VK4_Qnews, AR newsline, ARRL AudioNews, RAIN report,
+#               RSGB News, VK5 & VK7 local news and Old Timers Club News.
+#
+#		This file gets run by a cron job on sunday morning.
+#
+#
+# arguments:	'wia, q, arnl, arrl, rain, rsgb, vk5, vk7, raotc, all'
+#		     on the command line
+#
+# output files:	$NEWS/wianews.mp3
+# 		$NEWS/qnews.mp3
+# 		$NEWS/arnl.mp3
+# 		$NEWS/arrlan.mp3
+#		$NEWS/rsgban.mp3
+#		$NEWS/raotc.mp3
+#               $NEWS/rain.mp3
+#               $NEWS/vk5.mp3
+#               $NEWS/vk7.mp3
+#	if archive="yes" also saves...
+#               $archiveloc/wianews_ddmmyyy.mp3 (dmy of download)
+#               $archiveloc/vk4_qnews_ddmmyyy.mp3 (dmy of download)
+#               $archiveloc/ReportNNNN.mp3 (NNNN edition number)
+#               $archiveloc/rainreport_ddmmyyy.mp3 (dmy of download)
+#               $archiveloc/vk5_local-dd_mmmmm_yyyy.mp3
+#               $archiveloc/vk7_regional-dd_mmmmm_yyyy.mp3
+#               $archiveloc/RSGB-GB2RS-dd_mmmmm_yyyy.mp3
+#               $archiveloc/AAN-yyyy-mm-dd.mp3
+#               $archiveloc/raotc-yyyy_dd_mmmmm.mp3
+#
+#	** for $NEWS and $archiveloc, see config section below **
+#
+# history:
+# 20080704   vk8sj   Rehash of getTWIAR script to download WIA and Q
+#                    weekly news from www.wiaq.com as well as TWIAR
+# 20090227   vk8sj   Another twist, set to use FTP now to get file
+#                    from ftp.wiaq.com - needs YOUR email as passwd. 
+#                    Falls back to HTTP if FTP fails (dodgy servers)
+# 20130428   vk2yld  Rehash for new wia address and remove FTP calls
+#                    to streamline operation.  TWIAR disabled as in
+#                    recess for a while (permanently??)
+# 20130429   vk2yld  added AR Newsline and ARRL Audio News routines
+# 20130512   vk2yld  added RSGB download routine & tidyup some mess.
+# 20130526   vk2yld  fixed RSGB as podcast page out of step..
+# 20130730   vk2yld  fixed RSGB, again!
+# 20130822   vk2yld  fixed cleanup routine on arnl as it was leaving
+#                    some working files behind
+# 20130922   vk2yld  ARRL Audio News filename changed...
+# 20130929   vk2yld  AR Newsline file location changed...
+# 20150214   vk2yld  Remove TWIAR and TWIARI as both programs are
+#                    now defunkt. -=Will be sadly missed=-
+# 20150426   vk2yld  ARNL download fails again. fixed
+# 20151220   vk2yld  ARNL download fails yet again. Maybe they should
+#                    stop stuffing around with it!! RIP Bill. - fixed
+# 20160515   vk2yld  ARRL Audio News filename and webpage changed...
+# 20160610   vk2yld  Removed last bits of code from TWIAR program
+# 20160610   vk2yld  Insert code for rain report, instead of using the
+#                    stand-alone downloader.. Now all the news's are
+#                    in here.  I will add more as necessary
+# 20160623   vk2yld  Insert new code for RSGB Audio News, instead of
+#                    4 files, uses podcast from new site.  Old code
+#                    now been removed.
+# 20160628   vk2yld  move download routines to functions to allow
+#                    command line option 'all'
+# 20170128   vk2yld  RSGB padded out file with whitespace crashing
+#                    script - fixed field select with awk in lieu cut
+# 20170226   vk2yld  AR Newsline changed to HTTPS site completely 
+#                    screwing up the works.  ARNL section had to be
+#                    re-written to fix the mess...
+# 20170305   vk2yld  AR Newsline changed by adding a banner to the page
+#                    for automated download.  File has no ID3 tag to get
+#                    the report number, so just fixed the podcast ripper
+# 20170319   vk2yld  AR Newsline changed again..  I don't believe this..
+#                    Now the filename has changed and presented in a
+#                    different code format AGAIN.. Altered error routine
+#                    so script continues if errors found.
+# 20170326   vk2yld  AR Newsline changed again..  I STILL don't believe this..
+#                    Now the filename has shifted from the front page to a
+#                    'read more' link and then the audio on this page..
+#                    different code format AGAIN...
+# 20170409   vk2yld  AR Newsline changed again..  Altered archive routine..
+# 20180326   vk2yld  Yep, AR again..  rehashed routines completely again
+# 20180408   vk2yld  RSGB routine tidyup for CentOS-5 errors
+# 20180420   vk2yld  ARNL again.. endless error loop fixed..
+# 20181013   vk2yld  ARNL again.. formatting changed.. fixed..
+# 20181118   vk2yld  AR Newsline this time..  Website gone to HTTPS and
+#                    using a self-signed cert plus total page changes
+#                    requiring a complete re-hash..
+# 20181120   vk2yld  Added function to get RAOTC monthly news program.
+# 20181213   vk2yld  Cleanup of logging details
+#
+#
+################# CONFIGURATION ########################################
+#
+# Setup some configuration variables..
+#
+export TERM=vt100                        # Set terminal type for Lynx
+NEWS="/home/irlp/audio/custom/news"      # Define where news files stored
+archive="yes"                            # Keep an archive? yes/no
+archiveloc="/home/news_archive"          # Location of archive folder
+process="Start"                          # What we are doing at the moment
+########################################################################
+#  --- Should not need changes below here ---
+#
+# Make sure we are user repeater!!!
+   if [ "`/usr/bin/whoami`" != "repeater" ] ; then
+     echo "This program must be run as user REPEATER!"
+     exit 1
+   fi
+# Make sure we have sourced the environment file
+   if [ "$RUN_ENV" != "TRUE" ] ; then
+      . /home/irlp/custom/environment
+   fi
+#
+########################################################################
+#
+### Error Out Of Script
+#
+error() {
+echo
+echo "An error has occurred downloading the file!"
+writelog "Getnews: ERROR - $process, File download error."
+error="YES"
+case $1 in
+1)	touch $NEWS/wianews.mp3
+	touch $NEWS/error-wia ;;
+
+2)	touch $NEWS/qnews.mp3
+	touch $NEWS/error-q ;;
+
+3)	touch $NEWS/arnl.mp3
+	touch $NEWS/error-arnl ;;
+
+4)	touch $NEWS/arrlan.mp3
+	touch $NEWS/error-arrl ;;
+
+5)	touch $NEWS/rain.mp3
+	touch $NEWS/error-rain ;;
+
+6)	touch $NEWS/rsgban.mp3
+	touch $NEWS/error-rsgb ;;
+
+7)	touch $NEWS/vk5.mp3
+	touch $NEWS/error-vk5 ;;
+
+8)	touch $NEWS/vk7.mp3
+	touch $NEWS/error-vk7 ;;
+
+9)	touch $NEWS/raotc.mp3
+	touch $NEWS/error-raotc ;;
+
+*)	exit 100 ;;
+esac
+
+}
+
+########################################################################
+#
+### Logging ..
+#
+writelog() {
+  MESSAGE="`date '+%b %d %Y %T'` "$@
+  if [ -n "$LOGFILE" ]; then
+    echo $MESSAGE >> $LOGFILE
+  fi
+}
+echolog() {
+  echo $@
+  MESSAGE="`date '+%b %d %Y %T'` Getnews: "$@
+  if [ -n "$LOGFILE" ]; then
+    echo $MESSAGE >> $LOGFILE
+  fi
+}
+
+########################################################################
+#
+### Usage message
+#
+usage() {
+  echo
+  echo " Usage ....   getnews wia|q|arnl|arrl|rain|rsgb|vk5|vk7|raotc|all "
+  echo
+  echo "         wia - Gets WIA news broadcast"
+  echo "           q - Gets WIA-Qld news broadcast"
+  echo "        arnl - Gets Amateur Radio NewsLine (gets podcast in one piece)"
+  echo "        arrl - Gets ARRL Audio News"
+  echo "        rain - Gets latest RAIN report"
+  echo "        rsgb - Gets RSGB Audio News (single file)"
+  echo "         vk5 - Gets latest VK5 Local news"
+  echo "         vk7 - Gets latest VK7 Local news"
+  echo "       raotc - Gets RAOTC monthly news program"
+  echo "         all - Get the lot, one after the other..."
+  echo " Exiting now.."
+  echo
+  exit 1
+}
+
+########################################################################
+#
+### Fetch the latest WIA news programme
+#
+get_wia() {
+  echolog "WIA News file download script active"
+  echo
+  process="Get WIA News Programme File"
+# remove old file...
+  rm wianews.mp3 error-wia > /dev/null 2>&1
+  echo "Getting 128K file from - http://www.wiaq.org.au/ftp/wianews_128.mp3"
+  echo "  or backup file from - http://www2.vk7ax.id.au:46800/wianews/wianews_128.mp3"
+  echo "  or fallback to the 64K version - http://www.wiaq.org.au/ftp/wianews_64.mp3"
+  echo "  or backup 64K version - http://www2.vk7ax.id.au:46800/wianews/wianews_64.mp3"
+  echo "  or, if all that fails, try for the podcast then give up."; echo
+  /usr/bin/wget -nv http://www.wiaq.org.au/ftp/wianews_128.mp3 || \
+      /usr/bin/wget -nv http://www2.vk7ax.id.au:46800/wianews/wianews_128.mp3 || \
+      /usr/bin/wget -nv http://www.wiaq.org.au/ftp/wianews_64.mp3 || \
+      /usr/bin/wget -nv http://www2.vk7ax.id.au:46800/wianews/wianews_64.mp3 || \
+      get_wia_podcast || error 1
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 1
+  fi
+  if [ -f wianews_128.mp3 ]; then
+     mv wianews_128.mp3 wianews.mp3
+     echolog "Got WIA News @128K     ...   [ COMPLETED ]"
+  else
+     mv wianews_64.mp3 wianews.mp3
+     echolog "Got WIA News @64K      ...   [ COMPLETED ]"
+  fi
+  if [ "$archive" = "yes" ]; then
+    echo "Date data for file - "$DATENOW
+    echo "Archiving a copy of downloaded file.."
+    if [ -f $archiveloc/wianews_$DATENOW.mp3 ] ; then
+      echo "ERROR.. File already archived!"
+      echo "        Function aborting..."
+      writelog "Getnews: ERROR - Wianews_$DATENOW - Archive Exists"
+      return 1
+    fi
+    cp $NEWS/wianews.mp3 $archiveloc/wianews_$DATENOW.mp3
+    echo "Complete -  wianews_$DATENOW.mp3 archived!"
+  fi
+echolog "Processing WIA News Completed..."
+}
+
+### Fetch latest WIA news via Podcast
+#  This is the last resort, and will result in fetching
+#  the last news file that was uploaded..
+get_wia_podcast() {
+  echolog "Attempting to fetch WIA podcast - Activated."
+  echo "Download index file from server - http://www.wia.org.au/members/broadcast/wianews"
+  process="Get WIA Podcast"
+  /usr/bin/lynx -source http://www.wia.org.au/members/broadcast/wianews > wia_dump || error 1
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 1
+  fi
+  echo " Index Download Completed"
+  wia_pod=`grep -i "\.mp3" wia_dump | head -n1 | awk '{print $3}' | cut -d"\"" -f2`
+  process="Get WIA Programme File - $wia_pod"
+  echo "Fetching $wia_pod from server."
+  /usr/bin/wget -nv $wia_pod || error 1
+  if [ "$error" = "YES" ]; then
+     return 1
+  fi
+  echo "Done."
+  rm -f wia_dump
+  file=`echo $wia_pod | cut -d"/" -f5`
+  writelog "Getnews: Downloaded Podcast $file ...   [ COMPLETED ]"
+  echo "Located "$NEWS"/"$file
+  mv $file wianews_64.mp3                           # Podcast is at 64kb
+  echolog " Processing WIA News Podcast Completed..."
+}
+
+########################################################################
+#
+### Fetch latest Q-News programme
+#
+get_q() {
+  echolog "VK4 Q-News file download script active"
+  echo
+  process="Get Q-News Programme File"
+# remove old file...
+  rm qnews.mp3 error-q > /dev/null 2>&1
+  echo "Get file from Webserver - http://www.wiaq.org.au/ftp/vk4_qnews_64.mp3"
+  echo "or from backup Webserver - http://www2.vk7ax.id.au:46800/wianews/vk4_qnews_64.mp3"
+  /usr/bin/wget -nv http://www.wiaq.org.au/ftp/vk4_qnews_64.mp3 || \
+	/usr/bin/wget -nv http://www2.vk7ax.id.au:46800/wianews/vk4_qnews_64.mp3 || error 2
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 2
+  fi
+  echolog "Got Q-News    ...              [ COMPLETED ]"
+  mv vk4_qnews_64.mp3 qnews.mp3
+  #
+  if [ "$archive" = "yes" ]; then
+    echo "Date data for file - "$DATENOW
+    echo "Archiving a copy of downloaded file.."
+    if [ -f $archiveloc/vk4_qnews_$DATENOW.mp3 ] ; then
+      echo "ERROR.. Q-News_$DATENOW already archived!"
+      echo "        Function aborting..."
+      writelog "Getnews: ERROR - vk4_qnews_$DATENOW - Archive Exists"
+      return 2
+    fi
+    cp $NEWS/qnews.mp3 $archiveloc/vk4_qnews_$DATENOW.mp3
+    echo "Complete -  vk4_qnews_$DATENOW.mp3 archived!"
+  fi
+echolog "Processing Q-News Completed..."
+}
+
+########################################################################
+#
+### Fetch the Amateur Radio Newsline (Podcast)
+#
+#      echoproducer fallback file stays the same every week
+#                      - http://arnewsline7.squarespace.com/s/news.mp3
+#      but this file has no ID-Tag or reference to the edition number,
+#      and is crap quality (be OK to rebradcast on HF!) at 32kb/s...
+#      No good for archiving unless we add a date or something else.
+#
+get_arnl() {
+  echolog "Downloading AR Newsline Programme - Activated."
+  echo
+  process="Get AR Newsline Index File"
+  echo "Download index file from server - https://www.arnewsline.org"
+  base_addr="https://www.arnewsline.org"
+# remove old audio file...
+  rm -f arnl* error-arnl > /dev/null 2>&1
+# get index from website
+  /usr/bin/wget -nv -O ardump --no-check-certificate $base_addr || error 3
+  echo " Index Download Completed"
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 3
+  fi
+
+# find file for download
+line=`grep AUDIO ardump | grep -v script | head -n1 | grep -oE "href=\"\/s\/.*\.mp3\"" | cut -d"\"" -f6`
+line="$base_addr$line"
+
+# find actual 'file name' from path
+  f=1
+  while true ; do
+     arfile=`echo $line | cut -d"/" -f$f`
+     if [ -z `echo $arfile | grep -i mp3` ]; then
+        let f+=1
+        if [ $f -gt 30 ]; then
+           error 3            # line error maybe??
+           echo "ERROR.. Invalid filename in text."
+           break
+        fi
+      else
+        break
+     fi
+  done
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 3
+  fi
+# arfile now contains filename without path...
+  echo "Found :- $line in index text."
+  echo "File to download = "$arfile
+  echo
+  process="Get AR Newsline Programme File - $arfile"
+  /usr/bin/wget -nv -O arnl.mp3 --no-check-certificate $line || error 3
+  echo " Download Completed"
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 3
+  fi
+  writelog "Getnews: Download AR Newsline - $arfile  ...   [ COMPLETED ]"
+  echo "Located "$NEWS"/"$arfile" -"
+  echo "  Saved as "$NEWS"/arnl.mp3 for playback."
+  rm -f ardump
+  archfile=$arfile
+  if [ "$archive" = "yes" ]; then
+    echo "  Saving copy to archives -   [ Checking ]"
+    if [ -f $archiveloc/$archfile ] ; then
+      echo "ERROR.. "$archfile" already archived!"
+      echo "        Function aborting..."
+      writelog "Getnews: ERROR - "$archfile" - Archive Exists"
+      return 3
+    fi
+    cp  arnl.mp3 $archiveloc/$archfile          # Archive the audio program
+    echo "Complete -  $archfile archived!"
+  fi
+echolog "Processing $arfile Completed..."
+}
+
+########################################################################
+#
+### Fetch latest ARRL Audio News
+#
+get_arrl() {
+  echolog "Downloading ARRL Audio News file - Activated."
+  echo
+  echo "Download index file from server - http://www.blubrry.com/arrlaudionews/"
+  process="Get ARRL Audio News Index File"
+# remove old file...
+  rm -f arrl* error-arrl >/dev/null 2>&1
+  /usr/bin/wget -nv -O aandump --no-check-certificate https://www.blubrry.com/arrlaudionews/ || error 4
+  echo " Index Download Completed"
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 4
+  fi
+  pagefile=`grep href aandump | grep "Play Now" | head -n1 | cut -d"\"" -f2 | cut -d"#" -f1`
+  echo "Located page file = "$pagefile
+  wget -nv -O aandump --no-check-certificate $pagefile || error 4
+  aanfile=`grep href aandump | grep mp3 | cut -d"\"" -f6`
+  echo "File to download = "$aanfile
+  process="Get ARRL Programme File - $aanfile"
+  /usr/bin/wget -nv --no-check-certificate $aanfile || error 4
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 4
+  fi
+  echo " Audio Download Completed"
+  f=1
+  while true ; do
+     fname=`echo $aanfile | cut -d"/" -f$f`
+     if [ -z `echo $fname | grep -i mp3` ]; then
+        let f+=1
+      else
+        break
+     fi
+  done
+  echolog "Download ARRL Audio News $fname  ...   [ COMPLETED ]"
+  echo "Located "$NEWS"/"$fname" -"
+  echo "  Saving as "$NEWS"/arrlan.mp3 for playback."
+  mv $fname arrlan.mp3
+  rm -f aandump
+  if [ "$archive" = "yes" ]; then
+    echo "  Saving copy to archives -   [ Checking ]"
+    if [ -f $archiveloc/$fname ] ; then
+      echo "ERROR.. "$fname" already archived!"
+      echo "        Function aborting..."
+      writelog "Getnews: ERROR - "$fname" - Archive Exists"
+      return 4
+    fi
+    cp arrlan.mp3 $archiveloc/$fname          # Archive the audio program
+    echo "Complete -  $fname archived!"
+  fi
+  echolog "Processing $fname Completed..."
+}
+
+########################################################################
+#
+### Fetch latest VK5 Local news
+#
+get_vk5() {
+  echolog "Downloading VK5 local Audio file - Activated."
+  echo
+  process="Get Adelaide Local Programme File"
+# remove old file...
+  rm vk5.mp3 error-vk5 > /dev/null 2>&1
+  echo "Getting file from Webserver - http://northeastradioclub.org.au/broadcast/local.mp3"
+  /usr/bin/wget -nv http://northeastradioclub.org.au/broadcast/local.mp3 -O vk5.mp3 || error 7
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 7
+  fi
+  echo "Got Adelaide Local News  ...              [ COMPLETED ]"
+  writelog "Getnews: Got VK5 Local News Report   ...    [ COMPLETED ]"
+  if [ "$archive" = "yes" ]; then
+    echo "Date data for file - "$DATENOW
+    echo "Archiving a copy of downloaded file.."
+    if [ -f $archiveloc/vk5_local_$DATENOW.mp3 ] ; then
+      echo "ERROR.. vk5_local_$DATENOW already archived!"
+      echo "        Function aborting..."
+      writelog "Getnews: ERROR - vk5_local_$DATENOW - Archive Exists"
+      return 7
+    fi
+    cp $NEWS/vk5.mp3 $archiveloc/vk5_local_$DATENOW.mp3
+    echo "Complete -  vk5_local_$DATENOW archived!"
+  fi
+  echolog "Processing VK5 Local News Completed..."
+}
+
+########################################################################
+#
+### Fetch latest VK5 Local news
+#
+get_vk7() {
+  echolog "Downloading VK7 Regional Audio file - Activated."
+  echo
+  process="Get Tasmania Regional Programme File"
+# remove old file...
+  rm vk7.mp3 error-vk7 > /dev/null 2>&1
+  echo "Getting file from Webserver - http://www2.vk7ax.id.au:46800/wianews/VK7Regional.mp3"
+  /usr/bin/wget -nv http://www2.vk7ax.id.au:46800/wianews/VK7Regional.mp3 -O vk7.mp3 || error 8
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 8
+  fi
+  echo "Got Tasmanian Regional News  ...              [ COMPLETED ]"
+  writelog "Getnews: Got VK7 Regional News Report   ...     [ COMPLETED ]"
+  if [ "$archive" = "yes" ]; then
+    echo "Date data for file - "$DATENOW
+    echo "Archiving a copy of downloaded file.."
+    if [ -f $archiveloc/vk7_regional_$DATENOW.mp3 ] ; then
+      echo "ERROR.. vk7_regional_$DATENOW already archived!"
+      echo "        Function aborting..."
+      writelog "Getnews: ERROR - vk7_regional_$DATENOW - Archive Exists"
+      return 8
+    fi
+    cp $NEWS/vk7.mp3 $archiveloc/vk7_regional_$DATENOW.mp3
+    echo "Complete -  vk7_regional_$DATENOW.mp3 archived!"
+  fi
+  echolog "Processing VK7 Local News Completed..."
+}
+
+########################################################################
+#
+### Fetch latest RAIN Report
+#
+get_rain() {
+  echolog "Downloading Rain Report Audio file - Activated."
+  echo
+  process="Get Rain Report Programme File"
+# remove old file...
+  rm rain.mp3 error-rain > /dev/null 2>&1
+  echo "Getting file from Webserver - http://www.therainreport.com/sound/rainreport.mp3"
+  /usr/bin/wget -nv http://www.therainreport.com/sound/rainreport.mp3 || error 5
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 5
+  fi
+  echo "Got Rain Report  ...              [ COMPLETED ]"
+  mv rainreport.mp3 rain.mp3
+  writelog "Getnews: Got Rain Report   ...    [ COMPLETED ]"
+  if [ "$archive" = "yes" ]; then
+    echo "Date data for file - "$DATENOW
+    echo "Archiving a copy of downloaded file.."
+    if [ -f $archiveloc/rainreport_$DATENOW.mp3 ] ; then
+      echo "ERROR.. Rainreport_$DATENOW already archived!"
+      echo "        Function aborting..."
+      writelog "Getnews: ERROR - Rainreport_$DATENOW - Archive Exists"
+      return 5
+    fi
+    cp $NEWS/rain.mp3 $archiveloc/rainreport_$DATENOW.mp3
+    echo "Complete -  rainreport_$DATENOW.mp3 archived!"
+  fi
+  echolog "Processing Rain Report Completed..."
+}
+
+########################################################################
+#
+### Fetch latest RSGB Audio News (Podcast)
+#
+get_rsgb() {
+  echolog "Downloading RSGB Audio News file - Activated."
+  echo
+  echo "Download index file from server - http://gb2rs.podbean.com"
+  process="Get RSGB Audio News Index File"
+  rm -f rsgb* error-rsgb > /dev/null 2>&1
+  /usr/bin/lynx -source http://gb2rs.podbean.com > rsgb_dump || error 6
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 6
+  fi
+  echo " Index Download Completed"
+  gb2rs=`grep -i "\.mp3" rsgb_dump | head -n1 | awk '{print $14}' | cut -d"\"" -f2`
+  process="Get RSGB Programme File - $gb2rs"
+  /usr/bin/wget -nv -O rsgban.mp3 --no-check-certificate $gb2rs || error 6
+  if [ "$error" = "YES" ]; then
+    unset error
+    return 6
+  fi
+  echo "Done."
+  file=`echo $gb2rs | cut -d"/" -f7`
+  writelog "Getnews: Downloaded $file ...    [ COMPLETED ]"
+  echo "Located "$NEWS"/"$file" -"
+  echo "  Saved as "$NEWS"/rsgban.mp3 for playback."
+  rm -f rsgb_dump
+  if [ "$archive" = "yes" ]; then
+    echo "  Saving copy to archives -   [ Checking ]"
+    if [ -f $archiveloc/$file ] ; then
+      echo "ERROR.. "$file" already archived!"
+      echo "        Function aborting..."
+      writelog "Getnews: ERROR - "$file" - Archive Exists"
+      return 6
+    fi
+    cp rsgban.mp3 $archiveloc/$file                   # Archive the audio program
+    echo "Complete - $file archived!"
+  fi
+  echolog "Processing RSGB Completed..."
+}
+
+########################################################################
+#
+### Fetch latest RAOTC Monthly News
+#
+get_raotc() {
+  echolog "Downloading Old-Timers News file - Activated."
+  echo
+  baseaddr="http://www.raotc.org.au"
+  echo "Download index file from server - $baseaddr/broadcast.htm"
+  process="Get RAOTC monthly News Index File"
+  rm -f raotc* error-raotc > /dev/null 2>&1
+  /usr/bin/lynx -source $baseaddr/broadcast.htm > raotc_dump || error 9
+  if [ "$error" = "YES" ]; then
+     unset error
+     return 9
+  fi
+  echo " Index Download Completed"
+  raotc=`grep -i "\.mp3" raotc_dump | head -n1 | cut -d"\"" -f4`
+  process="Get RAOTC Programme File - $raotc"
+  /usr/bin/wget -nv -O raotc.mp3 $baseaddr/$raotc || error 9
+  if [ "$error" = "YES" ]; then
+    unset error
+    return 9
+  fi
+  echo "Done."
+  file=`echo $raotc | cut -d"/" -f2`
+  writelog "Getnews: Downloaded $file ...    [ COMPLETED ]"
+  echo "Located "$NEWS"/"$file" -"
+  echo "  Saved as "$NEWS"/raotc.mp3 for playback."
+  rm -f raotc_dump
+  if [ "$archive" = "yes" ]; then
+    echo "  Saving copy to archives -   [ Checking ]"
+    if [ -f $archiveloc/raotc-$file ] ; then
+      echo "Monthly programme raotc-$file already archived!"
+      echo "      Archiving not required..."
+      return 9
+    fi
+    cp raotc.mp3 $archiveloc/raotc-$file          # Archive the audio program
+    echo "Complete -  raotc-$file archived!"
+  fi
+  echolog " Processing raotc-$file Completed..."
+}
+
+########################################################################
+########################################################################
+### End Functions
+########################################################################
+#
+#
+# goto news directory
+cd $NEWS
+DATENOW=`/bin/date +%d_%B_%Y`
+clear; echo; echo
+
+case $1 in
+wia)    get_wia ;;
+q)	get_q ;;
+arnl)	get_arnl ;;
+arrl)	get_arrl ;;
+rain)	get_rain ;;
+rsgb)	get_rsgb ;;
+vk5)    get_vk5 ;;
+vk7)    get_vk7 ;;
+raotc)  get_raotc ;;
+all)    get_wia
+	echo "#######################################################################"
+	get_q
+	echo "#######################################################################"
+	get_arnl
+	echo "#######################################################################"
+	get_arrl
+	echo "#######################################################################"
+	get_rain
+	echo "#######################################################################"
+	get_vk5
+	echo "#######################################################################"
+	get_vk7
+	echo "#######################################################################"
+	get_rsgb
+	echo "#######################################################################"
+	get_raotc ;;
+*)	usage ;;
+esac
+
+
+#######################################################################
+# Completed...
+
+exit 0

@@ -1,0 +1,2 @@
+0 8 * * 0 (/home/irlp/custom/getnews wia  > /dev/null 2>&1)
+0 10 * * 0 (/home/irlp/custom/playnews wiacb  > /dev/null 2>&1)

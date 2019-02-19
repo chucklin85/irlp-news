@@ -1,0 +1,21 @@
+#!/bin/bash
+########################################################################
+# filename:	stopnews
+# description:	Kills the mpg123 process thus stopping the playing of
+#		any audio out the IRLP port. Most common usage is to
+#		stop the playing of ARRL Audio News or Newsline.
+# history:
+# 20020115	kc6hur	Original Release
+# 20040420	kc6hur	Sets the $LOCAL/stopnews flag and kills play
+# 20080720      vk8zsj  Updated to use mpg321 player under CentOS
+# 20100310      vk8sj   Updated the update to go back to mpg123!
+########################################################################
+#
+source /home/irlp/custom/my-functions.sh
+#
+# Stop the Audio player
+#
+touch $LOCAL/stopnews			# set flag to show stopped playback
+/usr/bin/killall mpg123 &>/dev/null	# kill off the local player
+$CUSTOM/confirm 2                       # tx confirmation - 2 beeps
+sleep 2                                 # Wait while system cleans up

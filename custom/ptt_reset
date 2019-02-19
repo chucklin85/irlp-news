@@ -1,0 +1,55 @@
+#!/bin/bash
+#
+######################################################################
+#
+# Make sure we are user repeater!!!
+if [ `/usr/bin/whoami` != "repeater" ] ; then
+  echo This program must be run as user REPEATER!
+  exit 1
+fi
+
+# Make sure we have sourced the environment file
+if [ "$RUN_ENV" != "TRUE" ] ; then
+  echo "You must source the environment file first. Do this by running:"
+  echo ". /home/irlp/custom/environment"
+  exit 1
+fi
+
+####################################################################
+
+TIMERVALUE=120
+echo `date '+%b %d %Y %T %z'` "PTT RESET SCRIPT RUNNING - CTRL-C TO EXIT"
+echo "Starting "$TIMERVALUE" second timer"
+timer=$TIMERVALUE
+X=1
+PRE=TRUE
+
+while [ "$PRE" = "TRUE" ] ; do
+
+  if [ $X = 1 ] ; then
+    let timer=$timer-1
+  fi
+ 
+  echo -en "    "\\r
+  echo -en $timer\\r
+
+  # Check if the timer has reached 0 yet...
+  #
+  if [ $timer = 0 ] ; then
+    #
+    $BIN/pttstate
+    if [ $? = 1 ] ; then
+      echo "Resetting PTT..."
+        $BIN/forceunkey
+      usleep 200000
+        $BIN/key
+      timer=$TIMERVALUE
+    else 
+      echo "PTT not active !"
+      timer=$TIMERVALUE
+    fi
+  fi
+  sleep 1
+
+done
+exit 0
